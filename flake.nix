@@ -2,7 +2,7 @@
   description = "AppImage bundler";
 
   inputs = {
-    nixpkgs.url = "nixpkgs/nixos-22.05";
+    nixpkgs.url = "nixpkgs/nixos-22.11";
     flake-utils.url = "github:numtide/flake-utils";
 
     flake-compat = {
@@ -27,6 +27,9 @@
         pkgs = (import nixpkgs {
           inherit system;
         }).pkgsStatic;
+        pkgs-dynamic = (import nixpkgs {
+          inherit system;
+        });
 
         # nixpkgs has an old version so we need to package our own
         own-squashfuse = pkgs.stdenv.mkDerivation {
@@ -37,7 +40,7 @@
         };
       in
       rec {
-        packages.apprun = with pkgs; rustPlatform.buildRustPackage rec {
+        packages.apprun = with pkgs-dynamic; rustPlatform.buildRustPackage rec {
           pname = "app-run";
           version = "0.0.1";
 
@@ -49,6 +52,11 @@
           };
 
           cargoHash = "sha256-HHB9QmbkfBgKM0VKdppmJ7c8cNsWDxehM7xFbv4WWy4=";
+
+          # cargoDeps = rustPlatform.fetchCargoTarball {
+          #   inherit src;
+          #   hash = "";
+          # };
 
           meta = with lib; {
             description = "A fast line-oriented regex search tool, similar to ag and ack";
