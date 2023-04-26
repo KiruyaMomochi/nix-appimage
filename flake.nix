@@ -44,8 +44,8 @@
           src = fetchFromGitHub {
             owner = "KiruyaMomochi";
             repo = pname;
-            rev = "3c3bd8f1636ddb1c208dfcfc0209b7ca3d6931a9";
-            hash = "sha256-kWR2LCl89cOmZ68cbD76cX4FAEaCBQudbkA3vsmAMY8=";
+            rev = "36416e9b8fc938ae685959ce53d2e17a3c047477";
+            hash = "sha256-f1JWEFrDJg1WDvxF/DbMOvrIFmoiRP5D2HWd6CT6Ev4=";
           };
 
           cargoHash = "sha256-HHB9QmbkfBgKM0VKdppmJ7c8cNsWDxehM7xFbv4WWy4=";
