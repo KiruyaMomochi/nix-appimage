@@ -111,7 +111,7 @@
             arch = builtins.head (builtins.split "-" system);
             closure = pkgs.writeReferencesToFile drv;
             extras = [
-              "AppRun f 555 0 0 cat ${packages.apprun}"
+              "AppRun f 555 0 0 cat ${packages.apprun}/bin/app-run"
               "entrypoint s 555 0 0 ${entrypoint}"
               "mountroot d 777 0 0" # TODO permissions?
             ];
