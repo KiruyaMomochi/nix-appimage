@@ -182,6 +182,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let current_exe = env::current_exe()?;
     let current_dir = current_exe.parent().unwrap();
+    info!("Current directory: {:?}", current_dir);
+
     let nix_dir: PathBuf = current_dir.join("nix");
     if !nix_dir.exists() {
         error!("nix directory does not exist");
@@ -193,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mount_dir = current_dir.join("mountroot");
     if !mount_dir.exists() {
-        error!("nix directory does not exist");
+        error!("mount directory does not exist");
         return Err(Box::new(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "mount directory does not exist",
@@ -202,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let entrypoint = current_dir.join("entrypoint");
     if !entrypoint.exists() {
-        error!("nix directory does not exist");
+        error!("entrypoint does not exist");
         return Err(Box::new(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "entrypoint does not exist",
