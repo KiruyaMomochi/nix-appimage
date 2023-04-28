@@ -1,2 +1,4 @@
 # from nix build
 /result
+/target
+.direnv

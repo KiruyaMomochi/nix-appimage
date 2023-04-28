@@ -41,18 +41,14 @@
           pname = "app-run";
           version = "0.0.1";
 
-          src = fetchFromGitHub {
-            owner = "KiruyaMomochi";
-            repo = pname;
-            rev = "36416e9b8fc938ae685959ce53d2e17a3c047477";
-            hash = "sha256-f1JWEFrDJg1WDvxF/DbMOvrIFmoiRP5D2HWd6CT6Ev4=";
+          src = self;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
           };
 
-          cargoHash = "sha256-HHB9QmbkfBgKM0VKdppmJ7c8cNsWDxehM7xFbv4WWy4=";
-
           meta = with lib; {
-            description = "A fast line-oriented regex search tool, similar to ag and ack";
-            homepage = "https://github.com/BurntSushi/ripgrep";
+            description = "Run wrapper for AppImage";
+            homepage = "https://github.com/KiruyaMomochi/nix-appimage";
             license = licenses.unlicense;
             maintainers = [ maintainers.tailhook ];
           };
@@ -168,5 +164,10 @@
           drv:
             assert pkgs.lib.assertMsg (handler ? ${drv.type}) "don't know how to make app image for type '${drv.type}'; only know ${known-types}";
             handler.${drv.type} drv;
+
+        devShell = with nixpkgs.legacyPackages.${system}; mkShell {
+          buildInputs = [ cargo rustc rustfmt pre-commit rustPackages.clippy ];
+          RUST_SRC_PATH = rustPlatform.rustLibSrc;
+        };
       });
 }
