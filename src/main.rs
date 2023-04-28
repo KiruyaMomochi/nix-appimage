@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 
 use nix::{
     fcntl::{open, OFlag},
@@ -135,16 +135,25 @@ impl AppRun {
                 continue;
             }
 
-            if path.is_dir() {
+            if !path.exists() {
+                warn!("Skipping non-existent path {:?}", path);
+                continue;
+            }
+
+            let mount_result = if path.is_dir() {
                 // Create bind mount
                 info!("Creating bind mount for {path_name:?}");
                 fs::create_dir_all(&mount_path)?;
-                mount::<_, _, Path, Path>(Some(&path), &mount_path, None, mount_flags, None)?;
+                mount::<_, _, Path, Path>(Some(&path), &mount_path, None, mount_flags, None)
             } else {
                 // Create a file and bind mount it
                 info!("Creating bind mount for {path_name:?}");
                 fs::write(&mount_path, "")?;
-                mount::<_, _, Path, Path>(Some(&path), &mount_path, None, mount_flags, None)?;
+                mount::<_, _, Path, Path>(Some(&path), &mount_path, None, mount_flags, None)
+            };
+
+            if let Err(e) = mount_result {
+                warn!("Failed to mount {path_name:?}: {e:?}");
             }
         }
 
@@ -203,12 +212,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let entrypoint = current_dir.join("entrypoint");
-    if !entrypoint.exists() {
-        error!("entrypoint does not exist");
-        return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "entrypoint does not exist",
-        )));
+    let entrypoint_link = fs::symlink_metadata(entrypoint);
+    if let Err(e) = entrypoint_link {
+        error!("entrypoint does not exist or is not a symbolic link");
+        return Err(Box::new(e));
     }
 
     let app = AppRun {
