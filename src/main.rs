@@ -86,6 +86,8 @@ impl AppRun {
         Ok(())
     }
 
+    /// Create a new mount namespace, bind mount everything from / into the mount_dir,
+    /// and bind mount /nix from self.nix_to_mount
     fn mounts(&self) -> Result<(), std::io::Error> {
         // Create a new mount namespace
         info!("Creating new mount namespace");
@@ -121,8 +123,13 @@ impl AppRun {
             Some("mode=755"),
         )?;
 
-        let mount_flags =
-            MsFlags::MS_BIND | MsFlags::MS_REC | MsFlags::MS_SLAVE | MsFlags::MS_UNBINDABLE;
+        // https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt
+        let mount_flags = 
+            // Recursively bind mount
+            MsFlags::MS_BIND | MsFlags::MS_REC |
+            // Make this mount point a slave so that mounts in the container don't propagate to the host
+            MsFlags::MS_SLAVE |
+            MsFlags::MS_UNBINDABLE;
 
         // Copy over root directories
         let files = fs::read_dir("/")?;
@@ -212,7 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let entrypoint = current_dir.join("entrypoint");
-    let entrypoint_link = fs::symlink_metadata(entrypoint);
+    let entrypoint_link = fs::symlink_metadata(&entrypoint);
     if let Err(e) = entrypoint_link {
         error!("entrypoint does not exist or is not a symbolic link");
         return Err(Box::new(e));
