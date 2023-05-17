@@ -92,7 +92,11 @@ impl AppRun {
         // Create a new mount namespace
         info!("Creating new mount namespace");
         let clone_flags = CloneFlags::CLONE_NEWNS;
-        unshare(clone_flags)?;
+        if let Err(e) = unshare(clone_flags) {
+            error!("Failed to create new mount namespace. Did you forget to run me as root?");
+            return Err(std::io::Error::from(e))
+        }
+
         if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
             info!("Created new user namespace");
             self.write_id_maps()?;
