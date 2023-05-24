@@ -2,7 +2,7 @@
   description = "AppImage bundler";
 
   inputs = {
-    nixpkgs.url = "nixpkgs/nixos-22.05";
+    nixpkgs.url = "nixpkgs/nixos-23.05";
     flake-utils.url = "github:numtide/flake-utils";
 
     flake-compat = {
@@ -166,7 +166,7 @@
             handler.${drv.type} drv;
 
         devShell = with nixpkgs.legacyPackages.${system}; mkShell {
-          buildInputs = [ cargo rustc rustfmt pre-commit rustPackages.clippy ];
+          buildInputs = [ cargo rustc rustfmt pre-commit rustPackages.clippy rust-analyzer ];
           RUST_SRC_PATH = rustPlatform.rustLibSrc;
         };
       });

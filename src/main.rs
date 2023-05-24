@@ -1,10 +1,11 @@
 use std::{
     env,
     ffi::CString,
-    fs,
+    fs, iter,
     path::{Path, PathBuf},
 };
 
+use clap::Parser;
 use log::{debug, error, info, warn};
 
 use nix::{
@@ -18,11 +19,27 @@ use nix::{
 mod id_map;
 use id_map::*;
 
+#[derive(Parser, Debug)]
+#[command(author, about)]
+struct Cli {
+    #[arg(long)]
+    mount_dir: Option<PathBuf>,
+    #[arg(long)]
+    nix_dir: Option<PathBuf>,
+    #[arg(long)]
+    entrypoint: Option<PathBuf>,
+    #[arg(long)]
+    dev_only: bool,
+    #[arg(long)]
+    version: bool,
+}
+
 struct AppRun {
     mount_dir: PathBuf,
     nix_dir: PathBuf,
     entrypoint: PathBuf,
-    debug: bool,
+    dev_only: bool,
+    args: Vec<String>,
 }
 
 fn test_openable() -> Result<bool, nix::Error> {
@@ -43,19 +60,18 @@ fn test_openable() -> Result<bool, nix::Error> {
 }
 
 impl AppRun {
-    fn exec(&self) -> Result<(), Box<dyn std::error::Error>> {
+    fn exec(self) -> Result<(), Box<dyn std::error::Error>> {
         self.mounts()?;
         self.chroot()?;
-
-        if self.debug {
-            test_openable()?;
-        }
 
         // Execute a shell
         // https://stackoverflow.com/questions/38948669/whats-the-most-direct-way-to-convert-a-path-to-a-c-char
         let cmd = CString::new(self.entrypoint.as_os_str().to_str().unwrap())?;
-        let args = std::env::args();
-        let args: Vec<CString> = args.map(|s| CString::new(s).unwrap()).collect();
+        let args: Vec<CString> = self
+            .args
+            .into_iter()
+            .map(|s| CString::new(s).unwrap())
+            .collect();
         info!("Executing entrypoint with {:?}", args);
         execve(&cmd, &args, &[CString::new("TERM=xterm-256color")?])?;
 
@@ -86,6 +102,36 @@ impl AppRun {
         Ok(())
     }
 
+    /// Perform a recursive bind mount
+    fn rec_bind_mount(&self, path: &PathBuf, mount_path: &PathBuf) -> Result<(), std::io::Error> {
+        // https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt
+        let mount_flags =
+            // Recursively bind mount
+            MsFlags::MS_BIND | MsFlags::MS_REC |
+            // Make this mount point a slave so that mounts in the container don't propagate to the host
+            MsFlags::MS_SLAVE |
+            MsFlags::MS_UNBINDABLE;
+        let path_name = path.file_name().unwrap();
+
+        let mount_result = if path.is_dir() {
+            // Create bind mount
+            info!("Creating bind mount for {path_name:?}");
+            fs::create_dir_all(&mount_path)?;
+            mount::<_, _, Path, Path>(Some(path), mount_path, None, mount_flags, None)
+        } else {
+            // Create a file and bind mount it
+            info!("Creating bind mount for {path_name:?}");
+            fs::write(&mount_path, "")?;
+            mount::<_, _, Path, Path>(Some(path), mount_path, None, mount_flags, None)
+        };
+
+        if let Err(e) = mount_result {
+            warn!("Failed to mount {path_name:?}: {e:?}");
+        }
+
+        Ok(())
+    }
+
     /// Create a new mount namespace, bind mount everything from / into the mount_dir,
     /// and bind mount /nix from self.nix_to_mount
     fn mounts(&self) -> Result<(), std::io::Error> {
@@ -94,7 +140,7 @@ impl AppRun {
         let clone_flags = CloneFlags::CLONE_NEWNS;
         if let Err(e) = unshare(clone_flags) {
             error!("Failed to create new mount namespace. Did you forget to run me as root?");
-            return Err(std::io::Error::from(e))
+            return Err(std::io::Error::from(e));
         }
 
         if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
@@ -111,11 +157,6 @@ impl AppRun {
             MsFlags::MS_SLAVE | MsFlags::MS_REC,
             None::<&str>,
         )?;
-        if self.debug {
-            // Read and print mountinfo
-            let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")?;
-            debug!("mountinfo: {mountinfo}");
-        }
 
         // Mount a tmpfs
         info!("Mounting tmpfs");
@@ -127,44 +168,33 @@ impl AppRun {
             Some("mode=755"),
         )?;
 
-        // https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt
-        let mount_flags = 
-            // Recursively bind mount
-            MsFlags::MS_BIND | MsFlags::MS_REC |
-            // Make this mount point a slave so that mounts in the container don't propagate to the host
-            MsFlags::MS_SLAVE |
-            MsFlags::MS_UNBINDABLE;
-
-        // Copy over root directories
-        let files = fs::read_dir("/")?;
-        for file in files {
-            let path = file?.path();
-            let path_name = path.file_name().unwrap();
-            let mount_path = self.mount_dir.join(path_name);
-
-            if path_name == "nix" {
-                continue;
-            }
-
-            if !path.exists() {
-                warn!("Skipping non-existent path {:?}", path);
-                continue;
-            }
-
-            let mount_result = if path.is_dir() {
-                // Create bind mount
-                info!("Creating bind mount for {path_name:?}");
-                fs::create_dir_all(&mount_path)?;
-                mount::<_, _, Path, Path>(Some(&path), &mount_path, None, mount_flags, None)
+        if self.dev_only {
+            // Only copy over /dev
+            let dev_path = PathBuf::from("/dev");
+            let mount_path = self.mount_dir.join("dev");
+            if !dev_path.exists() {
+                warn!("Skipping non-existent path {:?}", dev_path);
             } else {
-                // Create a file and bind mount it
-                info!("Creating bind mount for {path_name:?}");
-                fs::write(&mount_path, "")?;
-                mount::<_, _, Path, Path>(Some(&path), &mount_path, None, mount_flags, None)
-            };
+                self.rec_bind_mount(&dev_path, &mount_path)?;
+            }
+        } else {
+            // Copy over root directories
+            let files = fs::read_dir("/")?;
+            for file in files {
+                let path = file?.path();
+                let path_name = path.file_name().unwrap();
+                let mount_path = self.mount_dir.join(path_name);
 
-            if let Err(e) = mount_result {
-                warn!("Failed to mount {path_name:?}: {e:?}");
+                if path_name == "nix" {
+                    continue;
+                }
+
+                if !path.exists() {
+                    warn!("Skipping non-existent path {:?}", path);
+                    continue;
+                }
+
+                self.rec_bind_mount(&path, &mount_path)?;
             }
         }
 
@@ -172,13 +202,7 @@ impl AppRun {
         let mount_path = self.mount_dir.join("nix");
         fs::create_dir_all(&mount_path)?;
         info!("Creating bind mount for /nix from {:?}", self.nix_dir);
-        mount(
-            Some(&self.nix_dir),
-            &mount_path,
-            None::<&str>,
-            mount_flags,
-            None::<&str>,
-        )?;
+        self.rec_bind_mount(&self.nix_dir, &mount_path)?;
 
         Ok(())
     }
@@ -198,13 +222,39 @@ impl AppRun {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Oply keep --apprun-xxx flags and replace that with --xxx
+
+    let mut args = std::env::args();
+    let arg0 = args.next().unwrap_or_else(|| "nix-apprun".to_string());
+
+    let mut apprun_args = vec![arg0.clone()];
+    let mut pass_args = vec![arg0];
+    for arg in args {
+        if arg.starts_with("--apprun-") {
+            apprun_args.push(arg.replace("--apprun-", "--"));
+        } else {
+            pass_args.push(arg);
+        }
+    }
+
+    // let cli = Cli::parse();
+    let cli = Cli::parse_from(apprun_args);
+
+    if cli.version {
+        println!("nix-apprun v{}", env!("CARGO_PKG_VERSION"));
+    }
+
     env_logger::init();
 
     let current_exe = env::current_exe()?;
     let current_dir = current_exe.parent().unwrap();
     info!("Current directory: {:?}", current_dir);
 
-    let nix_dir: PathBuf = current_dir.join("nix");
+    let nix_dir = if let Some(nix_dir) = cli.nix_dir {
+        nix_dir
+    } else {
+        current_dir.join("nix")
+    };
     if !nix_dir.exists() {
         error!("nix directory does not exist");
         return Err(Box::new(std::io::Error::new(
@@ -213,7 +263,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )));
     }
 
-    let mount_dir = current_dir.join("mountroot");
+    let mount_dir = if let Some(mount_dir) = cli.mount_dir {
+        mount_dir
+    } else {
+        current_dir.join("mountroot")
+    };
     if !mount_dir.exists() {
         error!("mount directory does not exist");
         return Err(Box::new(std::io::Error::new(
@@ -222,18 +276,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )));
     }
 
-    let entrypoint = current_dir.join("entrypoint");
-    let entrypoint_link = fs::symlink_metadata(&entrypoint);
-    if let Err(e) = entrypoint_link {
-        error!("entrypoint does not exist or is not a symbolic link");
-        return Err(Box::new(e));
-    }
+    let entrypoint = if let Some(entrypoint) = cli.entrypoint {
+        entrypoint
+    } else {
+        let entrypoint = current_dir.join("entrypoint");
+        let entrypoint_link = fs::symlink_metadata(&entrypoint);
+        if let Err(e) = entrypoint_link {
+            error!("entrypoint does not exist or is not a symbolic link");
+            return Err(Box::new(e));
+        }
+        entrypoint
+    };
 
     let app = AppRun {
         mount_dir,
         nix_dir,
-        debug: false,
         entrypoint,
+        args: pass_args,
+        dev_only: cli.dev_only,
     };
     app.exec()?;
 
