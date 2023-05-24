@@ -23,22 +23,22 @@ use id_map::*;
 #[command(author, about)]
 struct Cli {
     #[arg(long)]
-    mount_dir: Option<PathBuf>,
+    bind: Option<Vec<PathBuf>>,
     #[arg(long)]
     nix_dir: Option<PathBuf>,
     #[arg(long)]
     entrypoint: Option<PathBuf>,
     #[arg(long)]
-    dev_only: bool,
+    mount_dir: Option<PathBuf>,
     #[arg(long)]
     version: bool,
 }
 
 struct AppRun {
-    mount_dir: PathBuf,
+    binds: Option<Vec<PathBuf>>,
     nix_dir: PathBuf,
+    mount_dir: PathBuf,
     entrypoint: PathBuf,
-    dev_only: bool,
     args: Vec<String>,
 }
 
@@ -168,14 +168,18 @@ impl AppRun {
             Some("mode=755"),
         )?;
 
-        if self.dev_only {
-            // Only copy over /dev
-            let dev_path = PathBuf::from("/dev");
-            let mount_path = self.mount_dir.join("dev");
-            if !dev_path.exists() {
-                warn!("Skipping non-existent path {:?}", dev_path);
-            } else {
-                self.rec_bind_mount(&dev_path, &mount_path)?;
+        if let Some(binds) = self.binds.as_ref() {
+            for bind in binds {
+                let dev_path = PathBuf::from(bind);
+                let mount_path = self.mount_dir.join(dev_path.file_name().unwrap());
+                if !dev_path.exists() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Bind mount path {:?} does not exist", dev_path),
+                    ));
+                } else {
+                    self.rec_bind_mount(&dev_path, &mount_path)?;
+                }
             }
         } else {
             // Copy over root directories
@@ -293,7 +297,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         nix_dir,
         entrypoint,
         args: pass_args,
-        dev_only: cli.dev_only,
+        binds: cli.bind,
     };
     app.exec()?;
 
