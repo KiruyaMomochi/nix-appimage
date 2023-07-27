@@ -77,16 +77,17 @@
     "squashfuse": {
       "flake": false,
       "locked": {
-        "lastModified": 1690396971,
-        "narHash": "sha256-8TCzbUzohu9OZ3BWXD1HtqSd7uk4T+BcQLgh08Egwd0=",
+        "lastModified": 1688761162,
+        "narHash": "sha256-aXzgHVPSvdUlZ4YX+f7OCNnaMvwXBpUGMetGGdToOwE=",
         "owner": "vasi",
         "repo": "squashfuse",
-        "rev": "590db2d7621144e819a61eaa969b2cb720449e7d",
+        "rev": "4465c39b51987cba0c668d4e1ec068058479a033",
         "type": "github"
       },
       "original": {
         "owner": "vasi",
         "repo": "squashfuse",
+        "rev": "4465c39b51987cba0c668d4e1ec068058479a033",
         "type": "github"
       }
     },

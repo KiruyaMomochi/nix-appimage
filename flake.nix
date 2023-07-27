@@ -16,7 +16,10 @@
     };
 
     squashfuse = {
-      url = "github:vasi/squashfuse";
+      # 53e1b97002c7bc13392a6b0121680d28a94a9715 add support for mounting of subdirectory
+      # which changes API of sqfs_open_image and sqfs_usage
+      # The correct patch should be add NULL when calling them in appimage-runtime
+      url = "github:vasi/squashfuse/4465c39b51987cba0c668d4e1ec068058479a033";
       flake = false;
     };
   };
