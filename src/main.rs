@@ -149,6 +149,8 @@ impl AppRun {
         }
 
         // Mark all mount points as slave
+        // So that mounts in the container don't propagate to the host
+        // For example, when we unmount /nix in the container, we don't want that to propagate to the host
         info!("Mounting / as rslave");
         mount(
             None::<&str>,
@@ -168,10 +170,23 @@ impl AppRun {
             Some("mode=755"),
         )?;
 
+        // Bind mount /nix from self.nix_to_mount
+        let mount_path = self.mount_dir.join("nix");
+        fs::create_dir_all(&mount_path)?;
+        info!("Creating bind mount for /nix from {:?}", self.nix_dir);
+        self.rec_bind_mount(&self.nix_dir, &mount_path)?;
+
+        // Bind mount everything from / into the mount_dir
         if let Some(binds) = self.binds.as_ref() {
             for bind in binds {
                 let dev_path = PathBuf::from(bind);
-                let mount_path = self.mount_dir.join(dev_path.file_name().unwrap());
+                let path_name = dev_path.file_name().unwrap();
+                let mount_path = self.mount_dir.join(path_name);
+
+                if path_name == "nix" {
+                    continue;
+                }
+
                 if !dev_path.exists() {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
@@ -193,7 +208,7 @@ impl AppRun {
                     continue;
                 }
 
-                if !path.exists() {
+                if !path.try_exists()? {
                     warn!("Skipping non-existent path {:?}", path);
                     continue;
                 }
@@ -201,12 +216,6 @@ impl AppRun {
                 self.rec_bind_mount(&path, &mount_path)?;
             }
         }
-
-        // Bind mount /nix from self.nix_to_mount
-        let mount_path = self.mount_dir.join("nix");
-        fs::create_dir_all(&mount_path)?;
-        info!("Creating bind mount for /nix from {:?}", self.nix_dir);
-        self.rec_bind_mount(&self.nix_dir, &mount_path)?;
 
         Ok(())
     }
@@ -219,7 +228,7 @@ impl AppRun {
         // Chroot
         chroot(&self.mount_dir)?;
         // Switch back to working directory
-        env::set_current_dir(&current_dir)?;
+        env::set_current_dir(current_dir)?;
 
         Ok(())
     }
