@@ -1,8 +1,7 @@
 use std::{
     env,
     ffi::CString,
-    fs, iter,
-    path::{Path, PathBuf},
+    fs, path::{Path, PathBuf},
 };
 
 use clap::Parser;
@@ -116,12 +115,12 @@ impl AppRun {
         let mount_result = if path.is_dir() {
             // Create bind mount
             info!("Creating bind mount for {path_name:?}");
-            fs::create_dir_all(&mount_path)?;
+            fs::create_dir_all(mount_path)?;
             mount::<_, _, Path, Path>(Some(path), mount_path, None, mount_flags, None)
         } else {
             // Create a file and bind mount it
             info!("Creating bind mount for {path_name:?}");
-            fs::write(&mount_path, "")?;
+            fs::write(mount_path, "")?;
             mount::<_, _, Path, Path>(Some(path), mount_path, None, mount_flags, None)
         };
 
