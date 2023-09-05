@@ -1,7 +1,8 @@
 use std::{
     env,
     ffi::CString,
-    fs, path::{Path, PathBuf},
+    fs,
+    path::{Path, PathBuf},
 };
 
 use clap::Parser;
@@ -33,14 +34,17 @@ struct Cli {
     version: bool,
 }
 
+#[derive(Debug, Default)]
 struct AppRun {
     binds: Option<Vec<PathBuf>>,
     nix_dir: PathBuf,
     mount_dir: PathBuf,
     entrypoint: PathBuf,
     args: Vec<String>,
+    new_user_namespace: bool,
 }
 
+/// Test if a file is openable
 fn test_openable() -> Result<bool, nix::Error> {
     const TEST_FILE: &str = "/dev/megaraid_sas_ioctl_node";
     let test_file = PathBuf::from(TEST_FILE);
@@ -59,7 +63,11 @@ fn test_openable() -> Result<bool, nix::Error> {
 }
 
 impl AppRun {
-    fn exec(self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Execute the entrypoint
+    fn exec_in_chroot(mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if !Uid::effective().is_root() {
+            self.new_user_namespace = true;
+        }
         self.mounts()?;
         self.chroot()?;
 
@@ -77,11 +85,8 @@ impl AppRun {
         Ok(())
     }
 
-    fn write_id_maps(&self) -> Result<(), std::io::Error> {
-        let uid = Uid::current();
-        let gid = Gid::current();
-        info!("uid: {}, gid: {}", uid, gid);
-
+    /// Write uid_map and gid_map
+    fn write_id_maps(&self, uid: Uid, gid: Gid) -> Result<(), std::io::Error> {
         let uid_map: UidMap = UidMap {
             inside_id: uid,
             outside_id: uid,
@@ -104,22 +109,23 @@ impl AppRun {
     /// Perform a recursive bind mount
     fn rec_bind_mount(&self, path: &PathBuf, mount_path: &PathBuf) -> Result<(), std::io::Error> {
         // https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt
-        let mount_flags =
+        let mount_flags = {
             // Recursively bind mount
             MsFlags::MS_BIND | MsFlags::MS_REC |
             // Make this mount point a slave so that mounts in the container don't propagate to the host
             MsFlags::MS_SLAVE |
-            MsFlags::MS_UNBINDABLE;
+            MsFlags::MS_UNBINDABLE
+        };
         let path_name = path.file_name().unwrap();
 
         let mount_result = if path.is_dir() {
             // Create bind mount
-            info!("Creating bind mount for {path_name:?}");
+            debug!("Creating bind mount for {path_name:?}");
             fs::create_dir_all(mount_path)?;
             mount::<_, _, Path, Path>(Some(path), mount_path, None, mount_flags, None)
         } else {
             // Create a file and bind mount it
-            info!("Creating bind mount for {path_name:?}");
+            debug!("Creating bind mount for {path_name:?}");
             fs::write(mount_path, "")?;
             mount::<_, _, Path, Path>(Some(path), mount_path, None, mount_flags, None)
         };
@@ -131,20 +137,61 @@ impl AppRun {
         Ok(())
     }
 
+    /// Mount all nonexist subdirectories of /nix/store from host
+    fn mount_nix(&self, host_nix: &Path, mount_nix: &Path) -> Result<(), std::io::Error> {
+        let host_store = host_nix.join("store");
+        let mount_store = mount_nix.join("store");
+        if !host_store.exists() {
+            return Ok(());
+        }
+        if !mount_store.exists() {
+            fs::create_dir_all(&mount_store)?;
+        }
+
+        info!("Mounting {host_store:?}/* to {mount_store:?}");
+        for entry in host_store.read_dir()? {
+            let path = entry?.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            // Check if this directory exists in the container
+            let mount_path = mount_store.join(path.file_name().unwrap());
+            if mount_path.exists() {
+                continue;
+            }
+
+            // Create a bind mount
+            self.rec_bind_mount(&path, &mount_path)?;
+        }
+
+        Ok(())
+    }
+
     /// Create a new mount namespace, bind mount everything from / into the mount_dir,
     /// and bind mount /nix from self.nix_to_mount
     fn mounts(&self) -> Result<(), std::io::Error> {
+        let (uid, gid) = (Uid::current(), Gid::current());
+        debug!("Current uid: {uid}, gid: {gid}");
+
         // Create a new mount namespace
-        info!("Creating new mount namespace");
-        let clone_flags = CloneFlags::CLONE_NEWNS;
+        let clone_flags = if self.new_user_namespace {
+            CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS
+        } else {
+            CloneFlags::CLONE_NEWNS
+        };
+        info!("Creating new mount namespace with {clone_flags:?}");
         if let Err(e) = unshare(clone_flags) {
-            error!("Failed to create new mount namespace. Did you forget to run me as root?");
-            return Err(std::io::Error::from(e));
+            if !self.new_user_namespace {
+                error!("Failed to create new mount namespace: {e:?}. Did you forget to run me as root?");
+            } else {
+                error!("Failed to create new mount namespace: {e:?}.");
+            }
         }
 
         if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
             info!("Created new user namespace");
-            self.write_id_maps()?;
+            self.write_id_maps(uid, gid)?;
         }
 
         // Mark all mount points as slave
@@ -160,7 +207,7 @@ impl AppRun {
         )?;
 
         // Mount a tmpfs
-        info!("Mounting tmpfs");
+        info!("Mounting tmpfs to {:?}", self.mount_dir);
         mount(
             Some("tmpfs"),
             &self.mount_dir,
@@ -169,30 +216,24 @@ impl AppRun {
             Some("mode=755"),
         )?;
 
-        // Bind mount /nix from self.nix_to_mount
-        let mount_path = self.mount_dir.join("nix");
-        fs::create_dir_all(&mount_path)?;
-        info!("Creating bind mount for /nix from {:?}", self.nix_dir);
-        self.rec_bind_mount(&self.nix_dir, &mount_path)?;
-
         // Bind mount everything from / into the mount_dir
         if let Some(binds) = self.binds.as_ref() {
             for bind in binds {
-                let dev_path = PathBuf::from(bind);
-                let path_name = dev_path.file_name().unwrap();
+                let path = PathBuf::from(bind);
+                let path_name = path.file_name().unwrap();
                 let mount_path = self.mount_dir.join(path_name);
 
                 if path_name == "nix" {
                     continue;
                 }
 
-                if !dev_path.exists() {
+                if !path.try_exists().unwrap_or(false) {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
-                        format!("Bind mount path {:?} does not exist", dev_path),
+                        format!("Bind mount path {:?} does not exist or error", path),
                     ));
                 } else {
-                    self.rec_bind_mount(&dev_path, &mount_path)?;
+                    self.rec_bind_mount(&path, &mount_path)?;
                 }
             }
         } else {
@@ -207,8 +248,8 @@ impl AppRun {
                     continue;
                 }
 
-                if !path.try_exists()? {
-                    warn!("Skipping non-existent path {:?}", path);
+                if !path.try_exists().unwrap_or(false) {
+                    warn!("Skipping non-existent or error path {:?}", path);
                     continue;
                 }
 
@@ -216,9 +257,16 @@ impl AppRun {
             }
         }
 
+        // Bind mount /nix from self.nix_to_mount
+        let mount_path = self.mount_dir.join("nix");
+        fs::create_dir_all(&mount_path)?;
+        info!("Creating bind mount for /nix from {:?}", self.nix_dir);
+        self.rec_bind_mount(&self.nix_dir, &mount_path)?;
+
         Ok(())
     }
 
+    /// Chroot to self.mount_dir
     fn chroot(&self) -> Result<(), Box<dyn std::error::Error>> {
         info!("Chrooting to {:?}", self.mount_dir);
 
@@ -306,8 +354,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         entrypoint,
         args: pass_args,
         binds: cli.bind,
+        ..Default::default()
     };
-    app.exec()?;
+    app.exec_in_chroot()?;
 
     Ok(())
 }
