@@ -37,9 +37,26 @@
         };
       in
       rec {
-        packages.apprun = pkgs.runCommandCC "AppRun" { } ''
-          $CC ${./apprun.c} -Werror -o $out
-        '';
+        packages.apprun = with pkgs; rustPlatform.buildRustPackage rec {
+          pname = "app-run";
+          version = "0.0.1";
+
+          src = fetchFromGitHub {
+            owner = "KiruyaMomochi";
+            repo = pname;
+            rev = "3c3bd8f1636ddb1c208dfcfc0209b7ca3d6931a9";
+            hash = "sha256-kWR2LCl89cOmZ68cbD76cX4FAEaCBQudbkA3vsmAMY8=";
+          };
+
+          cargoHash = "sha256-HHB9QmbkfBgKM0VKdppmJ7c8cNsWDxehM7xFbv4WWy4=";
+
+          meta = with lib; {
+            description = "A fast line-oriented regex search tool, similar to ag and ack";
+            homepage = "https://github.com/BurntSushi/ripgrep";
+            license = licenses.unlicense;
+            maintainers = [ maintainers.tailhook ];
+          };
+        };
 
         packages.runtime =
           let
