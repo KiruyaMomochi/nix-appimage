@@ -3,6 +3,9 @@ use std::{
     ffi::CString,
     fs,
     path::{Path, PathBuf},
+    sync::mpsc,
+    thread,
+    time::Duration,
 };
 
 use clap::Parser;
@@ -32,6 +35,8 @@ struct Cli {
     mount_dir: Option<PathBuf>,
     #[arg(long)]
     version: bool,
+    #[arg(long, default_value_t = 5.0)]
+    mount_timeout: f32,
 }
 
 #[derive(Debug, Default)]
@@ -42,6 +47,7 @@ struct AppRun {
     entrypoint: PathBuf,
     args: Vec<String>,
     new_user_namespace: bool,
+    mount_timeout: f32,
 }
 
 /// Test if a file is openable
@@ -104,6 +110,21 @@ impl AppRun {
         info!("Wrote gid_map");
 
         Ok(())
+    }
+
+    /// Find if file exists in a given time
+    fn with_timeout<F, T>(&self, f: F) -> Result<T, mpsc::RecvTimeoutError>
+    where
+        F: FnOnce() -> T,
+        F: Send + 'static,
+        T: Send + 'static,
+    {
+        let (sender, receiver) = mpsc::channel();
+        let _t = thread::spawn(move || {
+            sender.send(f()).unwrap_or(());
+        });
+
+        receiver.recv_timeout(Duration::from_secs_f32(self.mount_timeout))
     }
 
     /// Perform a recursive bind mount
@@ -216,45 +237,51 @@ impl AppRun {
             Some("mode=755"),
         )?;
 
-        // Bind mount everything from / into the mount_dir
+        let mut paths_to_bind = vec![];
         if let Some(binds) = self.binds.as_ref() {
+            // Bind mount everything from / into the mount_dir
             for bind in binds {
                 let path = PathBuf::from(bind);
-                let path_name = path.file_name().unwrap();
-                let mount_path = self.mount_dir.join(path_name);
-
-                if path_name == "nix" {
-                    continue;
-                }
-
-                if !path.try_exists().unwrap_or(false) {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!("Bind mount path {:?} does not exist or error", path),
-                    ));
-                } else {
-                    self.rec_bind_mount(&path, &mount_path)?;
-                }
+                paths_to_bind.push(path);
             }
         } else {
             // Copy over root directories
             let files = fs::read_dir("/")?;
             for file in files {
                 let path = file?.path();
-                let path_name = path.file_name().unwrap();
-                let mount_path = self.mount_dir.join(path_name);
-
-                if path_name == "nix" {
-                    continue;
-                }
-
-                if !path.try_exists().unwrap_or(false) {
-                    warn!("Skipping non-existent or error path {:?}", path);
-                    continue;
-                }
-
-                self.rec_bind_mount(&path, &mount_path)?;
+                paths_to_bind.push(path);
             }
+        }
+
+        for path in paths_to_bind {
+            let path_name = path.file_name().unwrap();
+            let mount_path = self.mount_dir.join(path_name);
+
+            if path_name == "nix" {
+                continue;
+            }
+
+            let check_path = path.clone();
+            let exists = match self.with_timeout(move || check_path.try_exists()) {
+                Err(e) => {
+                    warn!("Error: {}", e.to_string());
+                    warn!("Timed out to check existance of {path_name:?}. Maybe it's a broken symlink or broken NFS mount?");
+                    false
+                }
+                Ok(Err(e)) => {
+                    warn!("Error: {}", e.to_string());
+                    warn!("Failed to check existance of {path_name:?}.");
+                    false
+                }
+                Ok(Ok(exists)) => exists,
+            };
+
+            if !exists {
+                warn!("Skipping non-existent or error path {:?}", path);
+                continue;
+            }
+
+            self.rec_bind_mount(&path, &mount_path)?;
         }
 
         // Bind mount /nix from self.nix_to_mount
@@ -354,6 +381,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         entrypoint,
         args: pass_args,
         binds: cli.bind,
+        mount_timeout: cli.mount_timeout,
         ..Default::default()
     };
     app.exec_in_chroot()?;
