@@ -1,7 +1,7 @@
 { fetchFromGitHub
 , fuse
 , lz4
-, lzma
+, xz
 , lzo
 , pkg-config
 , squashfuse
@@ -27,7 +27,7 @@ stdenv.mkDerivation {
     squashfuse
     zstd
     zlib
-    lzma
+    xz
     lz4
     lzo
   ];
