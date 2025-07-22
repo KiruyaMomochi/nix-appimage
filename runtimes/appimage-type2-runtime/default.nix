@@ -26,7 +26,7 @@ let
   });
 
   squashfuse' = (squashfuse.override {
-    fuse = fuse3';
+    fuse3 = fuse3';
   }).overrideAttrs (old: {
     postInstall = (old.postInstall or "") + ''
       cp *.h -t $out/include/squashfuse/
