@@ -129,12 +129,13 @@ impl AppRun {
             return Ok(());
         }
 
-        // Step 2: Change propagation to slave+unbindable (must be a separate call)
+        // Step 2: Change propagation to private (must be a separate mount call).
+        // MS_SLAVE and MS_UNBINDABLE are mutually exclusive — pick one.
         if let Err(e) = mount::<Path, _, Path, Path>(
             None,
             mount_path,
             None,
-            MsFlags::MS_SLAVE | MsFlags::MS_UNBINDABLE | MsFlags::MS_REC,
+            MsFlags::MS_PRIVATE | MsFlags::MS_REC,
             None,
         ) {
             warn!("Failed to set propagation for {path_name:?}: {e}");
@@ -290,16 +291,44 @@ impl AppRun {
             self.rec_bind_mount(&path, &mount_path)?;
         }
 
-        // Bind mount /nix from self.nix_to_mount
-        let mount_path = self.mount_dir.join("nix");
-        fs::create_dir_all(&mount_path)?;
-        info!("Creating bind mount for /nix from {:?}", self.nix_dir);
-        self.rec_bind_mount(&self.nix_dir, &mount_path)?;
+        // Mount /nix from the squashfs, merging host /nix/store paths if available.
+        let mount_nix = self.mount_dir.join("nix");
+        fs::create_dir_all(&mount_nix)?;
 
-        // If the host has /nix, mount any store paths not already in the squashfs
         let host_nix = Path::new("/nix");
-        if host_nix.exists() {
-            self.mount_nix(host_nix, &mount_path)?;
+        if host_nix.exists() && host_nix.join("store").exists() {
+            // Host has /nix/store — use overlayfs so we can create mount points
+            // inside the read-only squashfs nix directory.
+            let overlay_upper = self.mount_dir.join(".nix-overlay-upper");
+            let overlay_work = self.mount_dir.join(".nix-overlay-work");
+            fs::create_dir_all(&overlay_upper)?;
+            fs::create_dir_all(&overlay_work)?;
+
+            let opts = format!(
+                "lowerdir={},upperdir={},workdir={}",
+                self.nix_dir.display(),
+                overlay_upper.display(),
+                overlay_work.display(),
+            );
+            info!("Mounting overlayfs for /nix (host /nix/store detected)");
+            match mount(
+                Some("overlay"),
+                &mount_nix,
+                Some("overlay"),
+                MsFlags::empty(),
+                Some(opts.as_str()),
+            ) {
+                Ok(()) => {
+                    self.mount_nix(host_nix, &mount_nix)?;
+                }
+                Err(e) => {
+                    warn!("overlayfs failed ({e}), falling back to read-only bind mount");
+                    self.rec_bind_mount(&self.nix_dir, &mount_nix)?;
+                }
+            }
+        } else {
+            info!("Creating bind mount for /nix from {:?}", self.nix_dir);
+            self.rec_bind_mount(&self.nix_dir, &mount_nix)?;
         }
 
         Ok(())
