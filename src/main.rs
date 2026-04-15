@@ -12,18 +12,16 @@ use clap::Parser;
 use log::{debug, error, info, warn};
 
 use nix::{
-    fcntl::{open, OFlag},
     mount::{mount, MsFlags},
     sched::{unshare, CloneFlags},
-    sys::stat::Mode,
-    unistd::{chroot, close, execve, Gid, Uid},
+    unistd::{chroot, execve, Gid, Uid},
 };
 
 mod id_map;
 use id_map::*;
 
 #[derive(Parser, Debug)]
-#[command(author, about)]
+#[command(author, version, about)]
 struct Cli {
     #[arg(long)]
     bind: Option<Vec<PathBuf>>,
@@ -33,8 +31,6 @@ struct Cli {
     entrypoint: Option<PathBuf>,
     #[arg(long)]
     mount_dir: Option<PathBuf>,
-    #[arg(long)]
-    version: bool,
     #[arg(long, default_value_t = 5.0)]
     mount_timeout: f32,
 }
@@ -48,24 +44,6 @@ struct AppRun {
     args: Vec<String>,
     new_user_namespace: bool,
     mount_timeout: f32,
-}
-
-/// Test if a file is openable
-fn test_openable() -> Result<bool, nix::Error> {
-    const TEST_FILE: &str = "/dev/megaraid_sas_ioctl_node";
-    let test_file = PathBuf::from(TEST_FILE);
-
-    match open(&test_file, OFlag::O_RDONLY, Mode::empty()) {
-        Ok(fd) => {
-            close(fd)?;
-            debug!("Openable test - Success");
-            Ok(true)
-        }
-        Err(e) => {
-            error!("Openable test - Error: {e}");
-            Ok(false)
-        }
-    }
 }
 
 impl AppRun {
@@ -130,29 +108,36 @@ impl AppRun {
     /// Perform a recursive bind mount
     fn rec_bind_mount(&self, path: &PathBuf, mount_path: &PathBuf) -> Result<(), std::io::Error> {
         // https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt
-        let mount_flags = {
-            // Recursively bind mount
-            MsFlags::MS_BIND | MsFlags::MS_REC |
-            // Make this mount point a slave so that mounts in the container don't propagate to the host
-            MsFlags::MS_SLAVE |
-            MsFlags::MS_UNBINDABLE
-        };
         let path_name = path.file_name().unwrap();
 
-        let mount_result = if path.is_dir() {
-            // Create bind mount
-            debug!("Creating bind mount for {path_name:?}");
+        // Step 1: Create the mount point and perform the recursive bind mount
+        if path.is_dir() {
             fs::create_dir_all(mount_path)?;
-            mount::<_, _, Path, Path>(Some(path), mount_path, None, mount_flags, None)
         } else {
-            // Create a file and bind mount it
-            debug!("Creating bind mount for {path_name:?}");
             fs::write(mount_path, "")?;
-            mount::<_, _, Path, Path>(Some(path), mount_path, None, mount_flags, None)
-        };
+        }
 
-        if let Err(e) = mount_result {
-            warn!("Failed to mount {path_name:?}: {e:?}");
+        info!("Creating bind mount for {path_name:?}");
+        if let Err(e) = mount::<_, _, Path, Path>(
+            Some(path),
+            mount_path,
+            None,
+            MsFlags::MS_BIND | MsFlags::MS_REC,
+            None,
+        ) {
+            warn!("Failed to bind mount {path_name:?}: {e}");
+            return Ok(());
+        }
+
+        // Step 2: Change propagation to slave+unbindable (must be a separate call)
+        if let Err(e) = mount::<Path, _, Path, Path>(
+            None,
+            mount_path,
+            None,
+            MsFlags::MS_SLAVE | MsFlags::MS_UNBINDABLE | MsFlags::MS_REC,
+            None,
+        ) {
+            warn!("Failed to set propagation for {path_name:?}: {e}");
         }
 
         Ok(())
@@ -290,6 +275,12 @@ impl AppRun {
         info!("Creating bind mount for /nix from {:?}", self.nix_dir);
         self.rec_bind_mount(&self.nix_dir, &mount_path)?;
 
+        // If the host has /nix, mount any store paths not already in the squashfs
+        let host_nix = Path::new("/nix");
+        if host_nix.exists() {
+            self.mount_nix(host_nix, &mount_path)?;
+        }
+
         Ok(())
     }
 
@@ -309,7 +300,7 @@ impl AppRun {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Oply keep --apprun-xxx flags and replace that with --xxx
+    // Only keep --apprun-xxx flags and replace that with --xxx
 
     let mut args = std::env::args();
     let arg0 = args.next().unwrap_or_else(|| "nix-apprun".to_string());
@@ -324,12 +315,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // let cli = Cli::parse();
+    // clap handles --version automatically via #[command(version)]
     let cli = Cli::parse_from(apprun_args);
-
-    if cli.version {
-        println!("nix-apprun v{}", env!("CARGO_PKG_VERSION"));
-    }
 
     env_logger::init();
 

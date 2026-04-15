@@ -2,7 +2,7 @@
   description = "A basic AppImage bundler";
 
   inputs = {
-    nixpkgs.url = "nixpkgs/nixos-25.05";
+    nixpkgs.url = "nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
 
     flake-compat = {
@@ -11,8 +11,15 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = (import nixpkgs { inherit system; }).pkgsStatic;
       in
@@ -33,18 +40,18 @@
           mkappimage-apprun = packages.appimage-appruns.userns-chroot;
         };
 
-        bundlers.default = drv:
+        bundlers.default =
+          drv:
           if drv.type == "app" then
-            lib.mkAppImage
-              {
-                program = drv.program;
-              }
+            lib.mkAppImage {
+              program = drv.program;
+            }
           else if drv.type == "derivation" then
-            lib.mkAppImage
-              {
-                program = pkgs.lib.getExe drv;
-              }
-          else builtins.abort "don't know how to build ${drv.type}; only know app and derivation";
+            lib.mkAppImage {
+              program = pkgs.lib.getExe drv;
+            }
+          else
+            builtins.abort "don't know how to build ${drv.type}; only know app and derivation";
 
         checks =
           let
@@ -53,13 +60,16 @@
             hello-appimage = bundlers.default pkgs.hello;
           in
           {
-            hello-is-static = pkgs.runCommand "check-hello-is-static"
-              {
-                nativeBuildInputs = [ (pkgs.lib.getBin pkgs.stdenv.cc.libc) ];
-              } ''
-              (! ldd ${hello-appimage} 2>&1) | grep "not a dynamic executable"
-              touch $out
-            '';
+            hello-is-static =
+              pkgs.runCommand "check-hello-is-static"
+                {
+                  nativeBuildInputs = [ (pkgs.lib.getBin pkgs.stdenv.cc.libc) ];
+                }
+                ''
+                  (! ldd ${hello-appimage} 2>&1) | grep "not a dynamic executable"
+                  touch $out
+                '';
           };
-      });
+      }
+    );
 }
