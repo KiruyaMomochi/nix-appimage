@@ -63,8 +63,43 @@ impl AppRun {
             .into_iter()
             .map(|s| CString::new(s).unwrap())
             .collect();
+        // Pass through host environment variables, excluding those that would
+        // interfere with the nix environment inside the chroot.
+        let blocked: &[&str] = &[
+            "PATH",
+            "LD_LIBRARY_PATH",
+            "LD_PRELOAD",
+            "PYTHONPATH",
+            "PERL5LIB",
+            "RUBYLIB",
+            "NODE_PATH",
+            "GEM_PATH",
+            "GUIX_PROFILE",
+            "NIX_PATH",
+            "NIX_PROFILES",
+            "NIX_SSL_CERT_FILE",
+            "SSL_CERT_FILE",
+            "LOCALE_ARCHIVE",
+            "TZDIR",
+            "FONTCONFIG_FILE",
+            "XDG_DATA_DIRS",
+            "GIO_EXTRA_MODULES",
+            "GTK_PATH",
+        ];
+        let mut envp: Vec<CString> = Vec::new();
+        for (key, val) in env::vars() {
+            if !blocked.iter().any(|&b| b == key) {
+                if let Ok(c) = CString::new(format!("{key}={val}")) {
+                    envp.push(c);
+                }
+            }
+        }
+        // Ensure TERM is always set
+        if !envp.iter().any(|c| c.to_bytes().starts_with(b"TERM=")) {
+            envp.push(CString::new("TERM=xterm-256color")?);
+        }
         info!("Executing entrypoint with {:?}", args);
-        execve(&cmd, &args, &[CString::new("TERM=xterm-256color")?])?;
+        execve(&cmd, &args, &envp)?;
 
         Ok(())
     }
