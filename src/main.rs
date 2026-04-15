@@ -188,11 +188,32 @@ impl AppRun {
         };
         info!("Creating new mount namespace with {clone_flags:?}");
         if let Err(e) = unshare(clone_flags) {
-            if !self.new_user_namespace {
-                error!("Failed to create new mount namespace: {e:?}. Did you forget to run me as root?");
+            if self.new_user_namespace {
+                eprintln!("Error: failed to create user namespace: {e}");
+                eprintln!();
+                // Check for AppArmor restriction (Ubuntu 23.10+)
+                if let Ok(val) =
+                    fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+                {
+                    if val.trim() == "1" {
+                        eprintln!("Detected: AppArmor is restricting unprivileged user namespaces on this system.");
+                        eprintln!("To allow AppImage execution, run:");
+                        eprintln!("  sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0");
+                        eprintln!();
+                        eprintln!("Or run this AppImage with sudo.");
+                    }
+                } else {
+                    eprintln!("Hint: your kernel may restrict unprivileged user namespaces.");
+                    eprintln!("Try running with sudo, or check your system's security settings.");
+                }
             } else {
-                error!("Failed to create new mount namespace: {e:?}.");
+                eprintln!("Error: failed to create mount namespace: {e}");
+                eprintln!(
+                    "Are you running as root? Try: sudo {}",
+                    env::args().next().unwrap_or_default()
+                );
             }
+            std::process::exit(1);
         }
 
         if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {

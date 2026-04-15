@@ -1,13 +1,14 @@
-{ fetchFromGitHub
-, stdenv
-, fuse3
-, pkg-config
-, squashfuse
-, zstd
-, zlib
-, xz
-, lz4
-, lzo
+{
+  fetchFromGitHub,
+  stdenv,
+  fuse3,
+  pkg-config,
+  squashfuse,
+  zstd,
+  zlib,
+  xz,
+  lz4,
+  lzo,
 }:
 
 let
@@ -18,20 +19,33 @@ let
     hash = "sha256-GR3LMuWMSafQmc2RQyveue3sq+HYBtl+VkcZVYMS0CI=";
   };
 
+  # Undo nixpkgs' NixOS-specific path hardcoding so the AppImage works on any Linux.
+  # nixpkgs replaces /bin/mount and /bin/umount with nix store paths, and sets
+  # FUSERMOUNT_DIR to /run/wrappers/bin — none of which exist on non-NixOS targets.
   fuse3' = fuse3.overrideAttrs (old: {
-    patches = (old.patches or []) ++ [
-      # this doesn't work -- causes fuse: failed to exec fusermount: Permission denied
-      # "${src}/patches/libfuse/mount.c.diff"
-    ];
+    preConfigure = ''
+      # Only substitute /bin/sh (harmless); do NOT replace /bin/mount or /bin/umount
+      # with nix store paths — those won't exist on the target machine.
+      substituteInPlace util/mount.fuse.c \
+        --replace-fail "/bin/sh" "${stdenv.shell}"
+    '';
+    env = (old.env or { }) // {
+      # Point fusermount lookup at /usr/bin (standard on Debian/Ubuntu/Fedora/Arch).
+      # The comment in nixpkgs says it "falls back to calling fusermount in $PATH",
+      # but that fallback was removed in fuse3. We need the dir to be correct.
+      NIX_CFLAGS_COMPILE = ''-DFUSERMOUNT_DIR="/usr/bin"'';
+    };
   });
 
-  squashfuse' = (squashfuse.override {
-    fuse3 = fuse3';
-  }).overrideAttrs (old: {
-    postInstall = (old.postInstall or "") + ''
-      cp *.h -t $out/include/squashfuse/
-    '';
-  });
+  squashfuse' =
+    (squashfuse.override {
+      fuse3 = fuse3';
+    }).overrideAttrs
+      (old: {
+        postInstall = (old.postInstall or "") + ''
+          cp *.h -t $out/include/squashfuse/
+        '';
+      });
 in
 stdenv.mkDerivation {
   pname = "appimage-type2-runtime";
