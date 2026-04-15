@@ -63,32 +63,50 @@ impl AppRun {
             .into_iter()
             .map(|s| CString::new(s).unwrap())
             .collect();
-        // Pass through host environment variables, excluding those that would
-        // interfere with the nix environment inside the chroot.
-        let blocked: &[&str] = &[
-            "PATH",
-            "LD_LIBRARY_PATH",
-            "LD_PRELOAD",
-            "PYTHONPATH",
-            "PERL5LIB",
-            "RUBYLIB",
-            "NODE_PATH",
-            "GEM_PATH",
-            "GUIX_PROFILE",
-            "NIX_PATH",
-            "NIX_PROFILES",
-            "NIX_SSL_CERT_FILE",
-            "SSL_CERT_FILE",
-            "LOCALE_ARCHIVE",
-            "TZDIR",
-            "FONTCONFIG_FILE",
-            "XDG_DATA_DIRS",
-            "GIO_EXTRA_MODULES",
-            "GTK_PATH",
+        // Pass through a curated set of host environment variables.
+        // Allowlist approach: only forward vars that are safe and useful inside
+        // the nix chroot. Everything else (PATH, LD_*, locale, pkg-config, …)
+        // is left to the nix wrapper to set correctly.
+        let allowed: &[&str] = &[
+            // Terminal
+            "TERM",
+            "COLORTERM",
+            // User identity
+            "HOME",
+            "USER",
+            "LOGNAME",
+            // SSH agent forwarding
+            "SSH_AUTH_SOCK",
+            "SSH_AGENT_PID",
+            "SSH_CONNECTION",
+            "SSH_CLIENT",
+            "SSH_TTY",
+            // Proxy (both cases, programs check either)
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "ALL_PROXY",
+            // Timezone
+            "TZ",
+            // systemd interop (important for AppImage chroot)
+            "SYSTEMD_IGNORE_CHROOT",
+            "DBUS_SESSION_BUS_ADDRESS",
+            // Display (in case of GUI tools)
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+        ];
+        // Also allow vars matching these prefixes
+        let allowed_prefixes: &[&str] = &[
+            "APPIMAGE_",  // let the AppImage itself pass custom vars
         ];
         let mut envp: Vec<CString> = Vec::new();
         for (key, val) in env::vars() {
-            if !blocked.iter().any(|&b| b == key) {
+            let pass = allowed.contains(&key.as_str())
+                || allowed_prefixes.iter().any(|p| key.starts_with(p));
+            if pass {
                 if let Ok(c) = CString::new(format!("{key}={val}")) {
                     envp.push(c);
                 }
